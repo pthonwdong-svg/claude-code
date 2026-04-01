@@ -1,4 +1,6 @@
 import { feature } from 'bun:bundle';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
@@ -296,6 +298,30 @@ async function main(): Promise<void> {
   profileCheckpoint('cli_after_main_import');
   await cliMain();
   profileCheckpoint('cli_after_main_complete');
+}
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+// `bun --define MACRO.VERSION=…` replaces property accesses, not bare `MACRO`, so never gate on `typeof MACRO`.
+// Source entry needs one re-exec with defines; `dist/cli.js` is bundled with MACRO inlined (no /src/ path).
+const isSourceCliEntry =
+  typeof import.meta.url === 'string' &&
+  import.meta.url.includes('/src/entrypoints/cli');
+if (isSourceCliEntry && process.env.CLAUDE_CODE_MACRO_CHILD !== '1') {
+  const { getMacroDefineBunArgs } = await import('../../scripts/macro-defines.ts');
+  const bunBin =
+    typeof Bun !== 'undefined' && 'execPath' in Bun && typeof Bun.execPath === 'string'
+      ? Bun.execPath
+      : process.execPath;
+  const entry = fileURLToPath(import.meta.url);
+  const proc = Bun.spawnSync({
+    cmd: [bunBin, ...getMacroDefineBunArgs(repoRoot), entry, ...process.argv.slice(2)],
+    cwd: repoRoot,
+    stdin: 'inherit',
+    stdout: 'inherit',
+    stderr: 'inherit',
+    env: { ...process.env, CLAUDE_CODE_MACRO_CHILD: '1' },
+  });
+  process.exit(proc.exitCode ?? 1);
 }
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects

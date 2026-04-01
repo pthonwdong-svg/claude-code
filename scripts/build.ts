@@ -10,7 +10,10 @@
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
-const pkg = JSON.parse(readFileSync(resolve(import.meta.dir, '..', 'package.json'), 'utf-8'))
+import { getMacroDefineRecord } from './macro-defines.ts'
+
+const repoRoot = resolve(import.meta.dir, '..')
+const pkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf-8'))
 const version: string = pkg.version
 
 const now = new Date().toISOString()
@@ -112,15 +115,7 @@ const featureFlags: Record<string, boolean> = {
 }
 
 // ── Build-time macro definitions ───────────────────────────────────
-const define: Record<string, string> = {
-  'MACRO.VERSION': JSON.stringify(version),
-  'MACRO.BUILD_TIME': JSON.stringify(now),
-  'MACRO.PACKAGE_URL': JSON.stringify(`https://www.npmjs.com/package/@anthropic-ai/claude-code`),
-  'MACRO.NATIVE_PACKAGE_URL': JSON.stringify(`https://www.npmjs.com/package/@anthropic-ai/claude-code`),
-  'MACRO.ISSUES_EXPLAINER': JSON.stringify(`report the issue at https://github.com/anthropics/claude-code/issues`),
-  'MACRO.FEEDBACK_CHANNEL': JSON.stringify(`https://github.com/anthropics/claude-code/issues`),
-  'MACRO.VERSION_CHANGELOG': JSON.stringify('{}'),
-}
+const define = getMacroDefineRecord(repoRoot, { buildTime: now })
 
 // ── Build ──────────────────────────────────────────────────────────
 
