@@ -202,16 +202,113 @@ if (!result.success) {
   process.exit(1)
 }
 
-// Prepend shebang to the output
+// Post-process the output
 const outPath = resolve(import.meta.dir, '..', 'dist', 'cli.js')
-const content = readFileSync(outPath, 'utf-8')
+let content = readFileSync(outPath, 'utf-8')
 const { writeFileSync, chmodSync } = await import('fs')
+
+// Fix Bun bundler bug: empty dynamic import() gets minified to
+// `Promise.resolve().then(() => )` which is invalid syntax.
+// Replace with `Promise.resolve().then(() => {})` (no-op).
+const brokenPattern = /\.then\(\(\)\s*=>\s*\)/g
+const fixCount = (content.match(brokenPattern) || []).length
+if (fixCount > 0) {
+  content = content.replace(brokenPattern, '.then(() => {})')
+  console.log(`Fixed ${fixCount} broken dynamic import(s) (Bun minifier bug)`)
+}
+
+// Prepend shebang and append bootstrap call
 const banner = `#!/usr/bin/env node
 // (c) Anthropic PBC. All rights reserved.
 // Version: ${version}
 `
-writeFileSync(outPath, banner + content)
+
+// Bootstrap: fast-path for --version (zero module loading), then call main().
+// The bundle exports `main` — find its minified name from the export statement
+// and inject a direct call so we don't need a self-import.
+const exportMatch = content.match(/export\{[^}]*?(\w+)\s+as\s+main[^}]*\}/)
+if (!exportMatch) {
+  console.error('ERROR: Could not find `export { ... as main }` in bundle — main() will not be called!')
+  process.exit(1)
+}
+const mainFnName = exportMatch[1]
+
+const bootstrap = `
+;(async()=>{
+  const a=process.argv.slice(2);
+  if(a.length===1&&(a[0]==="--version"||a[0]==="-v"||a[0]==="-V")){
+    console.log("${version} (Claude Code)");return;
+  }
+  await ${mainFnName}();
+})();
+`
+writeFileSync(outPath, banner + content + bootstrap)
 chmodSync(outPath, 0o755)
+
+// ── Create stub packages for external deps with static imports ─────
+// These packages are marked as external in Bun.build() so they're not
+// bundled, but the bundle still has `import ... from '...'` references.
+// Node.js needs something resolvable at runtime.
+const { mkdirSync: mkdirSyncFs } = await import('fs')
+
+const stubs: Record<string, { pkg: Record<string, unknown>; code: string }> = {
+  '@anthropic-ai/sandbox-runtime': {
+    pkg: { name: '@anthropic-ai/sandbox-runtime', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: [
+      'export class SandboxManager { constructor() {} async start() {} async stop() {} }',
+      'export const SandboxRuntimeConfigSchema = { parse: (x) => x };',
+      'export class SandboxViolationStore { constructor() {} getViolations() { return [] } }',
+    ].join('\n'),
+  },
+  'color-diff-napi': {
+    pkg: { name: 'color-diff-napi', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: [
+      'export class ColorDiff { constructor() {} }',
+      'export class ColorFile { constructor() {} }',
+      'export function getSyntaxTheme() { return null }',
+    ].join('\n'),
+  },
+  '@anthropic-ai/mcpb': {
+    pkg: { name: '@anthropic-ai/mcpb', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: 'export function installPlugin() { throw new Error("mcpb not available") }',
+  },
+  'modifiers-napi': {
+    pkg: { name: 'modifiers-napi', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: 'export default {}',
+  },
+  '@ant/claude-for-chrome-mcp': {
+    pkg: { name: '@ant/claude-for-chrome-mcp', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: [
+      'export function createClaudeForChromeMcpServer() { return null }',
+      'export const BROWSER_TOOLS = []',
+    ].join('\n'),
+  },
+  '@ant/computer-use-mcp': {
+    pkg: { name: '@ant/computer-use-mcp', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: 'export default {}',
+  },
+  '@ant/computer-use-input': {
+    pkg: { name: '@ant/computer-use-input', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: 'export default {}',
+  },
+  '@ant/computer-use-swift': {
+    pkg: { name: '@ant/computer-use-swift', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: 'export default {}',
+  },
+  'image-processor-napi': {
+    pkg: { name: 'image-processor-napi', version: '0.0.0-stub', type: 'module', main: 'index.js' },
+    code: 'export default {}',
+  },
+}
+
+const distNodeModules = resolve(import.meta.dir, '..', 'dist', 'node_modules')
+for (const [name, { pkg, code }] of Object.entries(stubs)) {
+  const dir = resolve(distNodeModules, ...name.split('/'))
+  mkdirSyncFs(dir, { recursive: true })
+  writeFileSync(resolve(dir, 'package.json'), JSON.stringify(pkg))
+  writeFileSync(resolve(dir, 'index.js'), code)
+}
+console.log(`Created ${Object.keys(stubs).length} runtime stub packages in dist/node_modules/`)
 
 console.log(`\nBuild complete: dist/cli.js`)
 console.log(`Output size: ${(Bun.file(outPath).size / 1024 / 1024).toFixed(1)} MB`)
