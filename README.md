@@ -20,17 +20,65 @@ The source map file in the published npm package contained a reference to the fu
 
 Claude Code is Anthropic's official CLI tool that lets you interact with Claude directly from the terminal to perform software engineering tasks — editing files, running commands, searching codebases, managing git workflows, and more.
 
-This repository contains the leaked `src/` directory.
+This repository contains the leaked `src/` directory plus **Bun-oriented tooling** (workspace stubs, build script, macro helpers) so the tree installs and builds on a typical checkout.
 
 - **Leaked on**: 2026-03-31
 - **Language**: TypeScript
-- **Runtime**: Bun
+- **Runtime**: Bun (development & bundle); **Node** can run the built `dist/cli.js`
 - **Terminal UI**: React + [Ink](https://github.com/vadimdemedes/ink) (React for CLI)
 - **Scale**: ~1,900 files, 512,000+ lines of code
 
 ---
 
+## Building and running
+
+1. **Install** (from repo root; includes workspace packages):
+
+   ```bash
+   bun install
+   ```
+
+2. **Production bundle** (single file + stub `dist/node_modules` for externals):
+
+   ```bash
+   bun run build
+   node dist/cli.js --version
+   ```
+
+3. **Run from TypeScript source** (recommended while hacking). The CLI entry injects build-time `MACRO.*` by re-invoking Bun once with the same `--define` flags as `scripts/build.ts` (see `scripts/macro-defines.ts`). You can use either:
+
+   ```bash
+   bun run src/entrypoints/cli.tsx --help
+   bun run dev:cli --help    # thin wrapper → same defines
+   ```
+
+4. **Workspace packages** (not in upstream npm as used here):
+
+   | Package | Role |
+   |---|---|
+   | `packages/@ant/claude-for-chrome-mcp` | Stub for Chrome MCP integration (matches internal monorepo layout) |
+   | `packages/color-diff-napi` | Pure TS syntax/word diff (ported workspace; no native NAPI) |
+
+5. **Further notes** (dependency rationale, MACRO re-exec, build-time fixes): see [`_notes.md`](_notes.md).
+
+---
+
 ## Directory Structure
+
+```
+.
+├── package.json             # workspaces: packages/*, packages/@ant/*
+├── scripts/
+│   ├── build.ts             # Bun.build → dist/cli.js, feature flags, MACRO define
+│   ├── macro-defines.ts     # Shared MACRO.* values for build + dev re-exec
+│   └── run-cli-dev.ts       # Optional: run CLI entry with defines (see dev:cli)
+├── packages/
+│   ├── @ant/claude-for-chrome-mcp/
+│   └── color-diff-napi/
+├── dist/                    # After build: cli.js and stub node_modules
+├── docs/                    # Build / config / deploy notes
+└── src/
+```
 
 ```
 src/
@@ -65,7 +113,7 @@ src/
 ├── state/                   # State management
 ├── migrations/              # Config migrations
 ├── schemas/                 # Config schemas (Zod)
-├── entrypoints/             # Initialization logic
+├── entrypoints/             # CLI & auxiliary entrypoints (e.g. cli.tsx)
 ├── ink/                     # Ink renderer wrapper
 ├── buddy/                   # Companion sprite (Easter egg)
 ├── native-ts/               # Native TypeScript utils
@@ -201,6 +249,10 @@ Manages registration and execution of all slash commands. Uses conditional impor
 ### `main.tsx`
 
 Commander.js-based CLI parser + React/Ink renderer initialization. At startup, parallelizes MDM settings, keychain prefetch, and GrowthBook initialization for faster boot.
+
+### `entrypoints/cli.tsx`
+
+Bootstrap CLI entry: fast paths (`--version`, bridge subcommands, etc.) and then imports `main.tsx`. Build-time constants (`MACRO.*`) are inlined in `dist/cli.js`; when executing this file directly under Bun, the entry re-execs once with `bun --define …` so `MACRO.VERSION` and related fields resolve without a manual copy-paste of defines.
 
 ---
 
